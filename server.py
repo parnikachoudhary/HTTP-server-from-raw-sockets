@@ -1,51 +1,56 @@
 import socket
-import os
 import threading
+from request_parser import parse_http_request
+from response_builder import build_response
+from router import route_request
+from utils import log_request
+
+
+    
 
 def handle_client(connection_door, client_addr):
     try:
         raw_bytes = connection_door.recv(1024)
-
+        if not raw_bytes:
+            return
+        
         chrome_request = raw_bytes.decode('utf-8')
-
-        print("------- CHROME's REQUEST -----------")
+        print("======== CHROME REQUEST ======")
         print(chrome_request)
-        print("------------------------------------")
+        print("==============================")
+
+        method, path, version, headers, body_bytes = parse_http_request(raw_bytes)
+
+        #===== 1. POST METHOD ============================
+        if method == "POST":
+            content_length = int(headers.get("content-length", 0))
+
+            while len(body_bytes) < content_length:
+                remaining = content_length - len(body_bytes)
+
+                chunk = connection_door.recv(min(1024, remaining))
+
+                if not chunk:
+                    break
+
+                body_bytes += chunk
+
+        handler_function = route_request(method, path)
+
+        if method == "GET":
+            status_code, status_text, content_type, response_body_bytes = handler_function(path, body_bytes)
+
+        else:
+            status_code, status_text, content_type, response_body_bytes = handler_function(path, body_bytes)
 
 
-        request_lines = chrome_request.split('\n')
-        first_line = request_lines[0]
-        parts = first_line.split(' ')
-
-        if(len(parts) >= 2):
-            method = parts[0]
-            path = parts[1]
-
-            if path == "/":
-                filename = "index.html"
-            else:
-                filename = path.lstrip("/")
-
-            BASE_DIR = os.path.abspath(".")
-            requested_abs_path = os.path.abspath(filename)
-
-            if(os.path.commonpath([BASE_DIR]) == os.path.commonpath([BASE_DIR, requested_abs_path])):
-                if os.path.exists(filename):
-                    with open(filename, "r") as file:
-                        content = file.read()
-                    response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n" + content  
-
-                else:
-                    not_found_error = "<h1> 404 Page Not Found</h1>"
-                    response = "HTTP/1.1 404 OK\r\nContent-Type: text/html\r\n\r\n" + not_found_error
-
-            else:
-                print(f"[SECURITY ALERT] Path traversal blocked from {client_addr}")
-                forbidden_content = "<h1>403 Forbidden</h1><p>Access Denied!</p>"
-                response = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\n\r\n" + forbidden_content
+        response = build_response(status_code, status_text, content_type, response_body_bytes)
 
 
-            connection_door.send(response.encode('utf-8'))
+        connection_door.send(response)
+
+        log_request(client_addr, method, path, status_code)
+
 
     except Exception as e:
         print(f"[ERROR] Subsystem failure: {e}")
@@ -55,30 +60,38 @@ def handle_client(connection_door, client_addr):
             connection_door.send(error_response.encode('utf-8'))
         except:
             pass
+    #================= exception block ends =======================
 
     finally:
         connection_door.close()
+#============== handle_client() ends ======================
+def start_server():
 
-server_door = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_door = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-server_door.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_door.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-server_door.bind(('127.0.0.1', 8080))
+    server_door.bind(('127.0.0.1', 8080))
 
-server_door.listen(5)
+    server_door.listen(5)
 
-print("====================================================")
-print("     CUSTOM MULTI-THREADED HTTP SERVER    ")
-print("  Running on: http://127.0.0.1:8080                 ")
-print("====================================================")
+    print("====================================================")
+    print("     CUSTOM MULTI-THREADED HTTP SERVER    ")
+    print("  Running on: http://127.0.0.1:8080                 ")
+    print("====================================================")
 
 
-while(True):
 
-    connection_door, client_addr = server_door.accept()
-    print(f"\n[ALERT] A new client is connected: {client_addr}")
 
-    new_worker = threading.Thread(target=handle_client, args=(connection_door, client_addr))
+    while(True):
 
-    new_worker.start()       
+        connection_door, client_addr = server_door.accept()
+        print(f"\n[ALERT] A new client is connected: {client_addr}")
+
+        new_worker = threading.Thread(target=handle_client, args=(connection_door, client_addr))
+
+        new_worker.start()   
+
+if __name__ == "__main__":
+    start_server()    
     
